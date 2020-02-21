@@ -54,8 +54,7 @@ int dummy_fasync(int fd, struct file* filp, int mode);
 struct dummy_port_data {
     // unsigned char port_idx;
 
-    unsigned long tx_fifo_size;
-    unsigned long rx_fifo_size;
+    unsigned long fifo_size;
 };
 
 struct dummy_uart_port {
@@ -64,12 +63,8 @@ struct dummy_uart_port {
     struct dummy_port_data* port_data;
 
     char type[12];
-
-    unsigned char* tx_fifo;
-    unsigned char* rx_fifo;
-
-    unsigned long tx_len;
-    unsigned long rx_len;
+  
+    struct circ_buf fifo;
 
     unsigned int mctrl;
     unsigned int baud;
@@ -93,17 +88,23 @@ struct dummy_uart_port {
 
 
 
+
+#define dummy_circ_empty(circ)		((circ)->head == (circ)->tail)
+    
+
 static struct class* dummy_class;
 
 static unsigned int dummy_tx_empty(struct uart_port* port)
 {
-
     struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
-
-    drintk("dummy_tx_empty %d\n", dummy->tx_len);
+    struct circ_buf* circ = &dummy->fifo;
+    int fifo_size = dummy->port_data->fifo_size;
+    int cnt = CIRC_CNT(circ->head, circ->tail, fifo_size);
+    
+    drintk("dummy_tx_empty %d\n", cnt);
 
     // return TIOCSER_TEMT;
-    return dummy->tx_len > 0 ? 0 : TIOCSER_TEMT;
+    return cnt > 0 ? 0 : TIOCSER_TEMT;
 }
 
 static void dummy_set_mctrl(struct uart_port* port, unsigned int mctrl)
@@ -129,12 +130,13 @@ static void dummy_stop_tx(struct uart_port* port)
 
 static void dummy_start_tx(struct uart_port* port)
 {
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
-    struct circ_buf* xmit = &port->state->xmit;
-    int i = 0;
+    //struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
+    //struct circ_buf* xmit = &port->state->xmit;
+    //int i = 0;
 
     drintk("dummy_start_tx!\n");
 
+    /*
     // dummy->tx_len = 0;
     do {
         dummy->tx_fifo[dummy->tx_len++] = xmit->buf[xmit->tail];
@@ -157,6 +159,7 @@ static void dummy_start_tx(struct uart_port* port)
 
     init_completion(&dummy->write_ok);
     wait_for_completion(&dummy->write_ok);
+    */
 }
 
 static void dummy_stop_rx(struct uart_port* port)
@@ -288,127 +291,65 @@ int dummy_release(struct inode* i, struct file* file)
 ssize_t dummy_read(struct file* file, char __user* buf, size_t size, loff_t* offset)
 {
     struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
-    unsigned long tx_len = dummy->tx_len;
-    int read_len = 0;
+    struct circ_buf* circ = &dummy->fifo;
+    int fifo_size = dummy->port_data->fifo_size;
+    int fifo_len = CIRC_CNT(circ->head, circ->tail, fifo_size);
+    int read_len = size > fifo_len ? fifo_len : size;
+    int ret = 0, len = 0;
 
-    read_len = size > tx_len ? tx_len : size;
+    while (read_len >= 0) {
+		len = CIRC_CNT_TO_END(circ->head, circ->tail, fifo_size);
+        if(len > read_len)
+          len = read_len;
+        if(len <= 0)
+          break;
 
-    if( read_len > 0)
-    {
-      printk("dummy_read2 size:%d tx_len:%d read_len:%d\n\n", size, tx_len, read_len);
-    }
-    copy_to_user(buf, dummy->tx_fifo, read_len);
-    dummy->tx_len -= read_len;
+        printk("dummy_read size:%d fifo_len:%d len:%d\n", size, fifo_len, len);
+		copy_to_user(buf, circ->buf + circ->tail, len);
+        circ->tail = (circ->tail + len) & (fifo_size - 1);
 
-    //if ((dummy->tx_len == 0) && (read_len > 0))
-    //    complete(&dummy->write_ok);
-
-    return read_len;
-}
-
-static ssize_t __dummy_write(struct uart_port* port, const char* buf, size_t count)
-{
-    struct uart_state *state=NULL;
-    struct circ_buf *circ=NULL;
-    int c, ret;
-
-    printk("__dummy write start buf:0x%08x count:%d\n", buf, count);
-    
-    state= port->state;
-    circ = &state->xmit;
-	
-    while (port) {
-      c = CIRC_SPACE_TO_END(circ->head, circ->tail, UART_XMIT_SIZE);
-      if (count < c)
-        c = count;
-      if (c <= 0)
-        break;
-      
-      printk("dst:0x%08x, src:0x%08x, c:%d\n", circ->buf + circ->head, buf, c);
-      memcpy(circ->buf + circ->head, buf, c);
-      circ->head = (circ->head + c) & (UART_XMIT_SIZE - 1);
-      buf += c;
-      count -= c;
-      ret += c;
+        buf += len;
+        read_len -= len;
+        ret += len;
 	}
 
-	//if (port && !uart_tx_stopped(port))
-    printk("write step2\n");
-    if(!port || !port->ops || !port->ops->start_tx)
-    {
-      printk("invalid ops or starttx\n");
-      return 0;
-    }
-    port->ops->start_tx(port);
-    //}
-    
     return ret;
 }
 
 ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff_t* offset)
 {
     struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
-    // struct tty_struct *tty = NULL;
-    struct uart_port* port = NULL;
-    unsigned char ch = 0;
-    int i = 0;
-
+    struct circ_buf* circ = &dummy->fifo;
+    int fifo_size = dummy->port_data->fifo_size;
+    int fifo_space = CIRC_SPACE(circ->head, circ->tail, fifo_size);
+    int write_len = size > fifo_space ? fifo_space : size;
+    int ret = 0, len = 0;
+    
     printk("dummy write size:%d\n", size);
     
-    // struct tty_port *tty = NULL;
-
     if (dummy == NULL)
     {
         printk("dummy is nullptr\n");
         return -EIO;
     }
 
-    port = &dummy->port;
-    if (dummy->port.state == NULL)
-    {
-        printk("dummy->port.state is nullptr\n");
-        return -EIO;
-    }
+    while ( write_len > 0) {
+		len = CIRC_SPACE_TO_END(circ->head, circ->tail, fifo_size);
+		if (write_len < len)
+			len = write_len;
+		if (len <= 0)
+			break;
 
-    struct tty_port* tty = NULL;
-    tty = &dummy->port.state->port;
+        printk("dummy_write size:%d fifo_space:%d len:%d\n", size, fifo_space, len);
+		copy_from_user(circ->buf + circ->head, buf, len);
+		circ->head = (circ->head + len) & (fifo_size - 1);
+        
+		buf += len;
+	    write_len -= len;
+		ret += len;
+	}
 
-    // tty = dummy->port.state->port.tty;
-    if (tty == NULL)
-    {
-        printk("tty is nullptr\n");
-        return -EIO;
-    }
-
-    /*
-    tb = tty->buf.tail;
-    if (tb)
-        printk("tb->used %d tb->size %d\n", tb->used, tb->size);
-    */
-
-    copy_from_user(dummy->rx_fifo, buf, size);
-    dummy->rx_len = size;
-
-    // printk("size %lu buf %s\n", dummy->rx_len, dummy->rx_fifo);
-
-    // insert chars
-
-    /*
-    for (i = 0; i < size; i++) {
-        ch = *(dummy->rx_fifo + i);
-        port->icount.rx++;
-
-        tty_insert_flip_char(tty, ch, 0);
-    }
-
-    tty_flip_buffer_push(tty);
-    */
-
-
-    memcpy(dummy->tx_fifo, dummy->rx_fifo, size);
-    dummy->tx_len = size;
-    return size;
-    //return __dummy_write(port, dummy->rx_fifo, dummy->rx_len);
+    return ret;
 }
 
 long dummy_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
@@ -431,12 +372,16 @@ long dummy_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
 unsigned int dummy_poll(struct file* file, struct poll_table_struct* pwait)
 {
     struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
+    struct circ_buf* circ = &dummy->fifo;
+    int fifo_size = dummy->port_data->fifo_size;
+    int cnt = CIRC_CNT(circ->head, circ->tail, fifo_size);
+
     unsigned int mask = 0;
 
-    printk("%d tx_len %d\n", dummy->index, dummy->tx_len);
+    printk("%d cnt %d\n", dummy->index, cnt);
     poll_wait(file, &dummy->poll_wq, pwait);
 
-    if (dummy->tx_len)
+    if (cnt)
         mask |= POLLIN | POLLRDNORM;
 
     return mask;
@@ -544,11 +489,11 @@ int create_manager_device(struct platform_device* pdev, int index)
     init_completion(&dummy->manager_activie);
     init_waitqueue_head(&dummy->poll_wq);
 
-    dummy->tx_fifo = (unsigned char*)kmalloc(data->tx_fifo_size, GFP_KERNEL);
-    dummy->rx_fifo = (unsigned char*)kmalloc(data->rx_fifo_size, GFP_KERNEL);
-    if (!dummy->tx_fifo || !dummy->rx_fifo) {
-        printk("dummy fifo kmalloc err rx=%p tx=%p\n", \
-            dummy->rx_fifo, dummy->tx_fifo);
+    dummy->fifo.buf = (unsigned char*)kmalloc(data->fifo_size, GFP_KERNEL);
+    dummy->fifo.head = 0;
+    dummy->fifo.tail = 0;
+    if (!dummy->fifo.buf) {
+        printk("dummy fifo kmalloc err rx=%p tx=%p\n", dummy->fifo.buf);
         ret = -ENOMEM;
         goto FIFO_ERR;
     }
@@ -611,11 +556,8 @@ DEV_ERR:
     uart_remove_one_port(&dummy_driver, &dummy->port);
 
 PORT_ERR:
-    if (dummy->rx_fifo)
-        kfree(dummy->rx_fifo);
-
-    if (dummy->tx_fifo)
-        kfree(dummy->tx_fifo);
+    if (dummy->fifo.buf)
+        kfree(dummy->fifo.buf);
 
 FIFO_ERR:
     kfree(dummy);
@@ -653,11 +595,8 @@ static int serial_dummy_remove(struct platform_device* dev)
 
         uart_remove_one_port(&dummy_driver, &dummy->port);
 
-        if (dummy->rx_fifo)
-            kfree(dummy->rx_fifo);
-
-        if (dummy->tx_fifo)
-            kfree(dummy->tx_fifo);
+        if (dummy->fifo.buf)
+            kfree(dummy->fifo.buf);
 
         kfree(dummy);
     }
@@ -678,8 +617,7 @@ static struct platform_driver dummy_serial_dirver = {
 };
 
 static struct dummy_port_data dummy_serial_dev_data = {
-        .tx_fifo_size = 2 * 1024,
-        .rx_fifo_size = 2 * 1024,
+        .fifo_size = 2 * 1024,
 };
 
 void dummy_serial_release(struct device* dev);

@@ -43,7 +43,7 @@
 
 static int dummy_serial_major = 0;
 static int dummy_serial_minor_start = 0;
-static struct dummy_file_data* dummy_array[DUMMY_SERIAL_NR];
+static struct dummy_file_data* dummy_array[2*DUMMY_SERIAL_NR];
 
 unsigned int dummy_serial_nr = 2;
 module_param(dummy_serial_nr, uint, S_IRUGO);
@@ -65,7 +65,6 @@ struct dummy_file_data {
     struct dummy_cache* cache_local;
     struct dummy_cache* cache_buddy;
   
-    int index;
     struct cdev c_dev;
 };
 
@@ -77,16 +76,13 @@ static struct class* dummy_class;
 
 int dummy_open(struct inode* i, struct file* file)
 {
-    int minor = iminor(i);
-    int index = minor - dummy_serial_minor_start;
-
     struct dummy_file_data* data =  container_of(i->i_cdev, struct dummy_file_data, c_dev);
     if(!data)
       printk("invalid private data\n");
     
     file->private_data = data;
 
-    drintk("minor %d index %d private_data %p\n", minor, index, file->private_data);
+    drintk("minor %d private_data %p\n", iminor(i), file->private_data);
 
     return 0;
 }
@@ -219,41 +215,35 @@ struct file_operations dummy_fops = {
     .fasync = dummy_fasync,
 };
 
-int create_manager_device(struct platform_device* pdev, int index)
+
+static struct dummy_file_data* create_one_device(const char* dev_name, int major, int minor, int fifo_size)
 {
     struct dummy_file_data* dummy = NULL;
-    struct dummy_platform_data* data = NULL;
     struct device* tmp = NULL;
     struct dummy_cache* cache = NULL;
-    int ret = 0;
     dev_t dev = 0;
-    char dev_name[64] = { 0 };
 
-    data = (struct dummy_platform_data*)pdev->dev.platform_data;
-    if (!data) {
-        printk("not platform data\n");
-        return -EINVAL;
-    }
+#ifdef DUMMY_DEBUG_ON
+    printk("start create one device:%s major:%d minor:%d size:%d\n", dev_name, major, minor, fifo_size);
+#endif
 
-    dummy = (struct dummy_file_data*)\
-        kmalloc(sizeof(struct dummy_file_data), GFP_KERNEL);
+    dummy = (struct dummy_file_data*)kmalloc(sizeof(struct dummy_file_data), GFP_KERNEL);
     if (!dummy) {
         printk("malloc dummy error\n");
-        return -ENOMEM;
+        return NULL;
     }
 
     memset(dummy, 0, sizeof(struct dummy_file_data));
-    dummy->index = index;
 
     cache =(struct dummy_cache*)kmalloc(sizeof(struct dummy_cache), GFP_KERNEL);
     if ( !cache ) {
         printk("dummy cache kmalloc error\n");
-        goto FIFO_ERR;
+        goto CACHE_ERR;
     }
-    cache->fifo.buf = (unsigned char*)kmalloc(data->fifo_size, GFP_KERNEL);
+    cache->fifo.buf = (unsigned char*)kmalloc(fifo_size, GFP_KERNEL);
     if ( !cache->fifo.buf ) {
         printk("dummy fifo buffer kmalloc error\n");
-        goto FIFO_ERR;
+        goto CACHE_ERR;
     }
 
     cache->fifo.head = 0;
@@ -262,28 +252,8 @@ int create_manager_device(struct platform_device* pdev, int index)
     
     dummy->cache_local = cache;
     
-    dummy->platform_data = data;
-
-    dummy_array[index] = dummy;
-
-    if (!dummy_serial_major) {
-        sprintf(dev_name, "serialdum%d", 0);
-        ret = alloc_chrdev_region(&dev, 0, DUMMY_SERIAL_NR, dev_name);
-        if (!ret) {
-            dummy_serial_major = MAJOR(dev);
-            dummy_serial_minor_start = MINOR(dev);
-            // printk("major %d minor_start %d\n", dummy_serial_major, dummy_serial_minor_start);
-        }
-        else {
-            printk("register cdev err, ret=%d\n", ret);
-            goto DEV_ERR;
-        }
-    }
-    else {
-        dev = MKDEV(dummy_serial_major, dummy_serial_minor_start + index);
-        sprintf(dev_name, "serialdum%d", index);
-    }
-
+    dev = MKDEV(major, minor);
+    
     cdev_init(&dummy->c_dev, &dummy_fops);
     dummy->c_dev.owner = THIS_MODULE;
     cdev_add(&dummy->c_dev, dev, DUMMY_SERIAL_NR);
@@ -294,13 +264,9 @@ int create_manager_device(struct platform_device* pdev, int index)
     }
     
     printk("create dummy serial manager device /dev/%s\n", dev_name);
+    return dummy;
 
-    // platform_set_drvdata(pdev, dummy);
-
-    return ret;
-
-DEV_ERR:
-FIFO_ERR:
+CACHE_ERR:
     if (cache && cache->fifo.buf)
         kfree(cache->fifo.buf);
 
@@ -308,8 +274,54 @@ FIFO_ERR:
         kfree(cache);
     
     kfree(dummy);
+    return NULL;
+}
 
-    return ret;
+int create_manager_device(struct platform_device* pdev, int major, int minor_start, int index)
+{
+    struct dummy_file_data* dummyx = NULL, *dummyy = NULL;
+    struct dummy_platform_data* data = NULL;
+    char dev_name[64] = { 0 };
+
+    data = (struct dummy_platform_data*)pdev->dev.platform_data;
+    if (!data) {
+        printk("not platform data\n");
+        return -EINVAL;
+    }
+
+#ifdef DUMMY_DEBUG_ON
+    printk("start create x and y\n");
+#endif
+
+    // create x device
+    sprintf(dev_name, "serialx%d", index);
+    dummyx = create_one_device(dev_name, major, minor_start + 2*index, data->fifo_size);
+    if(!dummyx){
+      printk("create_one_device failed dev:%s major:%d index:%d\n", dev_name, major, index);
+      return -1;
+    }
+
+    // create y device
+    sprintf(dev_name, "serialy%d", index);
+    dummyy = create_one_device(dev_name, major, minor_start + 2*index+1, data->fifo_size);
+    if(!dummyy){
+      printk("create_one_device failed dev:%s major:%d index:%d\n", dev_name, major, index);
+      return -1;
+    }
+
+#ifdef DUMMY_DEBUG_ON
+    printk("finish create x:%p and y:%p\n", dummyx, dummyy);
+#endif
+
+    dummyx->cache_buddy = dummyy->cache_local;
+    dummyy->cache_buddy = dummyx->cache_local;
+
+    dummyx->platform_data = data;
+    dummyy->platform_data = data;
+    
+    dummy_array[2*index] = dummyx;
+    dummy_array[2*index+1] = dummyy;
+    return 0;
 }
 
 
@@ -317,9 +329,29 @@ static int serial_dummy_probe(struct platform_device* pdev)
 {
     int i = 0;
     int ret = 0;
+    char dev_name[64] = { 0 };
+    dev_t dev = 0;
+    
+    sprintf(dev_name, "serialdum%d", 0);
+    ret = alloc_chrdev_region(&dev, 0, DUMMY_SERIAL_NR, dev_name);
+    if (!ret) {
+      dummy_serial_major = MAJOR(dev);
+      dummy_serial_minor_start = MINOR(dev);
+      // printk("major %d minor_start %d\n", dummy_serial_major, dummy_serial_minor_start);
+    }
+    else {
+      printk("register cdev err, ret=%d\n", ret);
+      return ret;
+    }
 
     for (i = 0; i < dummy_serial_nr; i++) {
-        ret = create_manager_device(pdev, i);
+        if(2*i >= DUMMY_SERIAL_NR)
+        {
+            printk("dummy device overflow, cur:%d max:%d\n", 2*i, DUMMY_SERIAL_NR);
+            break;
+        }
+        
+        ret = create_manager_device(pdev, dummy_serial_major, dummy_serial_minor_start, i);
         if (ret) {
             printk("create dummy manager device err, index = %d\n", i);
         }
@@ -388,9 +420,9 @@ static int __init serial_dummy_init(void)
 
     printk("Hi3520d dummy serial drv, by sdliu ver.20151202\n");
 
-    if (dummy_serial_nr > DUMMY_SERIAL_NR) {
+    if (2*dummy_serial_nr > DUMMY_SERIAL_NR) {
         printk("dummy serial nr(%d) is more than max(%d)\n", \
-            dummy_serial_nr, DUMMY_SERIAL_NR);
+            2*dummy_serial_nr, DUMMY_SERIAL_NR);
         return -EINVAL;
     }
 

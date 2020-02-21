@@ -287,20 +287,62 @@ int dummy_release(struct inode* i, struct file* file)
 
 ssize_t dummy_read(struct file* file, char __user* buf, size_t size, loff_t* offset)
 {
-    printk("dummy_read1\n");
     struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
     unsigned long tx_len = dummy->tx_len;
     int read_len = 0;
 
     read_len = size > tx_len ? tx_len : size;
-    printk("dummy_read2 size:%d tx_len:%d read_len:%d\n\n", size, tx_len, read_len);
+
+    if( read_len > 0)
+    {
+      printk("dummy_read2 size:%d tx_len:%d read_len:%d\n\n", size, tx_len, read_len);
+    }
     copy_to_user(buf, dummy->tx_fifo, read_len);
     dummy->tx_len -= read_len;
 
-    if (dummy->tx_len == 0)
-        complete(&dummy->write_ok);
+    //if ((dummy->tx_len == 0) && (read_len > 0))
+    //    complete(&dummy->write_ok);
 
     return read_len;
+}
+
+static ssize_t __dummy_write(struct uart_port* port, const char* buf, size_t count)
+{
+    struct uart_state *state=NULL;
+    struct circ_buf *circ=NULL;
+    int c, ret;
+
+    printk("__dummy write start buf:0x%08x count:%d\n", buf, count);
+    
+    state= port->state;
+    circ = &state->xmit;
+	
+    while (port) {
+      c = CIRC_SPACE_TO_END(circ->head, circ->tail, UART_XMIT_SIZE);
+      if (count < c)
+        c = count;
+      if (c <= 0)
+        break;
+      
+      printk("dst:0x%08x, src:0x%08x, c:%d\n", circ->buf + circ->head, buf, c);
+      memcpy(circ->buf + circ->head, buf, c);
+      circ->head = (circ->head + c) & (UART_XMIT_SIZE - 1);
+      buf += c;
+      count -= c;
+      ret += c;
+	}
+
+	//if (port && !uart_tx_stopped(port))
+    printk("write step2\n");
+    if(!port || !port->ops || !port->ops->start_tx)
+    {
+      printk("invalid ops or starttx\n");
+      return 0;
+    }
+    port->ops->start_tx(port);
+    //}
+    
+    return ret;
 }
 
 ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff_t* offset)
@@ -311,6 +353,8 @@ ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff
     unsigned char ch = 0;
     int i = 0;
 
+    printk("dummy write size:%d\n", size);
+    
     // struct tty_port *tty = NULL;
 
     if (dummy == NULL)
@@ -348,6 +392,8 @@ ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff
     // printk("size %lu buf %s\n", dummy->rx_len, dummy->rx_fifo);
 
     // insert chars
+
+    /*
     for (i = 0; i < size; i++) {
         ch = *(dummy->rx_fifo + i);
         port->icount.rx++;
@@ -356,9 +402,13 @@ ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff
     }
 
     tty_flip_buffer_push(tty);
+    */
 
 
+    memcpy(dummy->tx_fifo, dummy->rx_fifo, size);
+    dummy->tx_len = size;
     return size;
+    //return __dummy_write(port, dummy->rx_fifo, dummy->rx_len);
 }
 
 long dummy_ioctl(struct file* file, unsigned int cmd, unsigned long arg)

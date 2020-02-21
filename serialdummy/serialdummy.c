@@ -45,7 +45,7 @@ static int dummy_serial_major = 0;
 static int dummy_serial_minor_start = 0;
 static struct dummy_file_data* dummy_array[2*DUMMY_SERIAL_NR];
 
-unsigned int dummy_serial_nr = 2;
+unsigned int dummy_serial_nr = 1;
 module_param(dummy_serial_nr, uint, S_IRUGO);
 
 struct dummy_platform_data {
@@ -132,8 +132,8 @@ ssize_t dummy_read(struct file* file, char __user* buf, size_t size, loff_t* off
 ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff_t* offset)
 {
     struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
-    struct circ_buf* circ = &dummy->cache_local->fifo;
-    spinlock_t* lock = &dummy->cache_local->lock;
+    struct circ_buf* circ = &dummy->cache_buddy->fifo;
+    spinlock_t* lock = &dummy->cache_buddy->lock;
     int fifo_size=0, fifo_space=0, write_len=0, ret=0, len=0;
     
     spin_lock(lock);
@@ -256,14 +256,14 @@ static struct dummy_file_data* create_one_device(const char* dev_name, int major
     
     cdev_init(&dummy->c_dev, &dummy_fops);
     dummy->c_dev.owner = THIS_MODULE;
-    cdev_add(&dummy->c_dev, dev, DUMMY_SERIAL_NR);
+    cdev_add(&dummy->c_dev, dev, 2*DUMMY_SERIAL_NR);
 
     tmp = device_create(dummy_class, NULL, dev, NULL, dev_name);
     if (NULL == tmp) {
         printk("create device err! %d, %s\n", dev, dev_name);
     }
     
-    printk("create dummy serial manager device /dev/%s\n", dev_name);
+    printk("create device %p /dev/%s major:%d minor:%d \n", dummy, dev_name, major, minor);
     return dummy;
 
 CACHE_ERR:
@@ -333,7 +333,7 @@ static int serial_dummy_probe(struct platform_device* pdev)
     dev_t dev = 0;
     
     sprintf(dev_name, "serialdum%d", 0);
-    ret = alloc_chrdev_region(&dev, 0, DUMMY_SERIAL_NR, dev_name);
+    ret = alloc_chrdev_region(&dev, 0, 2*DUMMY_SERIAL_NR, dev_name);
     if (!ret) {
       dummy_serial_major = MAJOR(dev);
       dummy_serial_minor_start = MINOR(dev);
@@ -344,13 +344,7 @@ static int serial_dummy_probe(struct platform_device* pdev)
       return ret;
     }
 
-    for (i = 0; i < dummy_serial_nr; i++) {
-        if(2*i >= DUMMY_SERIAL_NR)
-        {
-            printk("dummy device overflow, cur:%d max:%d\n", 2*i, DUMMY_SERIAL_NR);
-            break;
-        }
-        
+    for (i = 0; i < dummy_serial_nr; i++) {        
         ret = create_manager_device(pdev, dummy_serial_major, dummy_serial_minor_start, i);
         if (ret) {
             printk("create dummy manager device err, index = %d\n", i);
@@ -364,14 +358,19 @@ static int serial_dummy_remove(struct platform_device* dev)
     struct dummy_file_data* dummy = NULL;
     int i = 0;
     dev_t dev_num = 0;
-
-    for (i = 0; i < dummy_serial_nr; i++) {
+    
+    for (i = 0; i < 2*dummy_serial_nr; i++) {
         dummy = dummy_array[i];
-
+        if(!dummy){
+            printk("invalid dummy object i:%d\n",i);
+            continue;
+        }
         dev_num = MKDEV(dummy_serial_major, dummy_serial_minor_start + i);
         device_destroy(dummy_class, dev_num);
         cdev_del(&dummy->c_dev);
 
+        printk("remove dummy %p major:%d minor:%d\n", dummy, dummy_serial_major, dummy_serial_minor_start+i);
+        
         if (dummy->cache_local && dummy->cache_local->fifo.buf)
             kfree(dummy->cache_local->fifo.buf);
         if (dummy->cache_local)
@@ -381,8 +380,10 @@ static int serial_dummy_remove(struct platform_device* dev)
     }
 
     dev_num = MKDEV(dummy_serial_major, dummy_serial_minor_start);
-    unregister_chrdev_region(dev_num, DUMMY_SERIAL_NR);
+    unregister_chrdev_region(dev_num, 2*DUMMY_SERIAL_NR);
 
+    printk("serial dummy remove finish\n");
+    
     return 0;
 }
 
@@ -418,11 +419,11 @@ static int __init serial_dummy_init(void)
 {
     int ret = 0;
 
-    printk("Hi3520d dummy serial drv, by sdliu ver.20151202\n");
+    printk("serial dummy init. ver:20200221\n");
 
-    if (2*dummy_serial_nr > DUMMY_SERIAL_NR) {
+    if (dummy_serial_nr > DUMMY_SERIAL_NR) {
         printk("dummy serial nr(%d) is more than max(%d)\n", \
-            2*dummy_serial_nr, DUMMY_SERIAL_NR);
+            dummy_serial_nr, DUMMY_SERIAL_NR);
         return -EINVAL;
     }
 

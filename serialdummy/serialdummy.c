@@ -62,204 +62,25 @@ struct dummy_uart_port {
 
     struct dummy_port_data* port_data;
 
-    char type[12];
-  
     struct circ_buf fifo;
 
-    unsigned int mctrl;
-    unsigned int baud;
-
-    struct ktermios termios;
     struct fasync_struct* async_queue;
     struct semaphore async_sem;
 
     struct completion manager_activie;
-    struct completion write_ok;
     wait_queue_head_t poll_wq;
 
     int manager_reset;
-
-    int is_default_termios : 1;
-    unsigned long status;
 
     struct cdev c_dev;
     int index;
 };
 
 
-
+static struct class* dummy_class;
 
 #define dummy_circ_empty(circ)		((circ)->head == (circ)->tail)
     
-
-static struct class* dummy_class;
-
-static unsigned int dummy_tx_empty(struct uart_port* port)
-{
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
-    struct circ_buf* circ = &dummy->fifo;
-    int fifo_size = dummy->port_data->fifo_size;
-    int cnt = CIRC_CNT(circ->head, circ->tail, fifo_size);
-    
-    drintk("dummy_tx_empty %d\n", cnt);
-
-    // return TIOCSER_TEMT;
-    return cnt > 0 ? 0 : TIOCSER_TEMT;
-}
-
-static void dummy_set_mctrl(struct uart_port* port, unsigned int mctrl)
-{
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
-    dummy->mctrl = mctrl;
-
-    drintk("dummy_set_mctrl!\n");
-}
-
-static unsigned int dummy_get_mctrl(struct uart_port* port)
-{
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
-
-    drintk("dummy_get_mctrl!\n");
-    return dummy->mctrl;
-}
-
-static void dummy_stop_tx(struct uart_port* port)
-{
-    drintk("dummy_stop_tx!\n");
-}
-
-static void dummy_start_tx(struct uart_port* port)
-{
-    //struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
-    //struct circ_buf* xmit = &port->state->xmit;
-    //int i = 0;
-
-    drintk("dummy_start_tx!\n");
-
-    /*
-    // dummy->tx_len = 0;
-    do {
-        dummy->tx_fifo[dummy->tx_len++] = xmit->buf[xmit->tail];
-
-        xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-        port->icount.tx++;
-
-        if (uart_circ_empty(xmit)) {
-            break;
-        }
-
-    } while (dummy->tx_len < dummy->port_data->tx_fifo_size);
-
-    for (i = 0; i < dummy->tx_len; i++) {
-        drintk("%c ", dummy->tx_fifo[i]);
-    }
-    drintk("\n");
-
-    wake_up(&dummy->poll_wq);
-
-    init_completion(&dummy->write_ok);
-    wait_for_completion(&dummy->write_ok);
-    */
-}
-
-static void dummy_stop_rx(struct uart_port* port)
-{
-    drintk("dummy_stop_rx!\n");
-}
-
-static void dummy_enable_ms(struct uart_port* port)
-{
-    drintk("dummy_enable_ms!\n");
-}
-
-static void dummy_break_ctl(struct uart_port* port, int break_state)
-{
-    drintk("dummy_break_ctl!\n");
-}
-
-static int dummy_startup(struct uart_port* port)
-{
-    drintk("dummy_startup!\n");
-
-    return 0;
-}
-
-static void dummy_shutdown(struct uart_port* port)
-{
-    drintk("dummy_shutdown!\n");
-}
-
-static void dummy_flush_buffer(struct uart_port* port)
-{
-    drintk("dummy_flush_buffer!\n");
-}
-
-
-static void
-dummy_set_termios(struct uart_port* port, struct ktermios* termios, struct ktermios* old)
-{
-    unsigned int baud = 0;
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
-
-    baud = uart_get_baud_rate(port, termios, old, 0, 460800);
-    dummy->baud = baud;
-
-    memcpy(&dummy->termios, termios, sizeof(struct ktermios));
-
-    drintk("set baudrate to %d\n", baud);
-
-#if 1
-    down(&dummy->async_sem);
-    if (dummy->async_queue == NULL) {
-        up(&dummy->async_sem);
-
-        init_completion(&dummy->manager_activie);
-        wait_for_completion(&dummy->manager_activie);
-
-    }
-    else {
-        up(&dummy->async_sem);
-    }
-
-    kill_fasync(&dummy->async_queue, SIGIO, POLL_IN);
-#endif
-
-}
-
-static const char* dummy_type(struct uart_port* port)
-{
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)port;
-    drintk("dummy_type\n");
-    return dummy->type;
-}
-
-static void dummy_release_port(struct uart_port* port)
-{
-    drintk("dummy_release_port\n");
-}
-
-static int dummy_request_port(struct uart_port* port)
-{
-    drintk("dummy_request_port\n");
-    return 0;
-}
-
-static void dummy_config_port(struct uart_port* port, int flags)
-{
-    drintk("dummy_config_port\n");
-    dummy_request_port(port);
-    drintk("port->type = %d\n", port->type);
-
-    port->type = PORT_AMBA;
-}
-
-static int dummy_verify_port(struct uart_port* port, struct serial_struct* ser)
-{
-
-    drintk("dummy_verify_port\n");
-
-    return 0;
-}
 
 int dummy_open(struct inode* i, struct file* file)
 {
@@ -356,16 +177,6 @@ long dummy_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
 {
     struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
 
-    switch (cmd) {
-    case 0xde:
-        printk("dummy_ioctl baud %d\n", dummy->baud);
-        copy_to_user((void*)arg, &dummy->baud, sizeof(unsigned int));
-        break;
-
-    default:
-        break;
-    }
-
     return 0;
 }
 
@@ -408,41 +219,6 @@ int dummy_fasync(int fd, struct file* filp, int mode)
     return ret;
 }
 
-static struct uart_ops dummy_uart_ops = {
-    .tx_empty = dummy_tx_empty,
-    .set_mctrl = dummy_set_mctrl,
-    .get_mctrl = dummy_get_mctrl,
-    .stop_tx = dummy_stop_tx,
-    .start_tx = dummy_start_tx,
-    .stop_rx = dummy_stop_rx,
-    .enable_ms = dummy_enable_ms,
-    .break_ctl = dummy_break_ctl,
-    .startup = dummy_startup,
-    .shutdown = dummy_shutdown,
-    .flush_buffer = dummy_flush_buffer,
-    .set_termios = dummy_set_termios,
-    .type = dummy_type,
-    .release_port = dummy_release_port,
-    .request_port = dummy_request_port,
-    .config_port = dummy_config_port,
-    .verify_port = dummy_verify_port,
-    // .wake_peer   = dummy_wake_peer,
-#ifdef CONFIG_CONSOLE_POLL
-    .poll_get_char = NULL,
-    .poll_put_char = NULL,
-#endif
-};
-
-static struct uart_driver dummy_driver = {
-    .owner = THIS_MODULE,
-    .driver_name = "ttyDUM",
-    .dev_name = "ttyDUM",
-    .major = 0,                    // AUTO allocate
-    .minor = 0,
-    .nr = DUMMY_SERIAL_NR,
-    .cons = NULL,
-};
-
 struct file_operations dummy_fops = {
     .open = dummy_open,
     .release = dummy_release,
@@ -468,13 +244,6 @@ int create_manager_device(struct platform_device* pdev, int index)
         return -EINVAL;
     }
 
-    /*
-    if (data->port_idx >= DUMMY_SERIAL_NR) {
-        printk("invalid dummy serial device\n");
-        return -EINVAL;
-    }
-    */
-
     dummy = (struct dummy_uart_port*)\
         kmalloc(sizeof(struct dummy_uart_port), GFP_KERNEL);
     if (!dummy) {
@@ -484,7 +253,7 @@ int create_manager_device(struct platform_device* pdev, int index)
 
     memset(dummy, 0, sizeof(struct dummy_uart_port));
     dummy->index = index;
-    dummy->is_default_termios = 1;
+
     sema_init(&dummy->async_sem, 1);
     init_completion(&dummy->manager_activie);
     init_waitqueue_head(&dummy->poll_wq);
@@ -492,6 +261,7 @@ int create_manager_device(struct platform_device* pdev, int index)
     dummy->fifo.buf = (unsigned char*)kmalloc(data->fifo_size, GFP_KERNEL);
     dummy->fifo.head = 0;
     dummy->fifo.tail = 0;
+
     if (!dummy->fifo.buf) {
         printk("dummy fifo kmalloc err rx=%p tx=%p\n", dummy->fifo.buf);
         ret = -ENOMEM;
@@ -499,23 +269,6 @@ int create_manager_device(struct platform_device* pdev, int index)
     }
 
     dummy->port_data = data;
-
-    dummy->port.dev = &(pdev->dev);
-    dummy->port.mapbase = 0;
-    dummy->port.membase = (unsigned char*)(0xdeadbeef);
-    dummy->port.iotype = UPIO_MEM;
-    dummy->port.irq = 0;
-    dummy->port.fifosize = 16;
-    dummy->port.ops = &dummy_uart_ops;
-    dummy->port.flags = UPF_BOOT_AUTOCONF;
-    dummy->port.line = index;
-    dummy->port.type = PORT_AMBA;
-
-    ret = uart_add_one_port(&dummy_driver, &dummy->port);
-    if (ret) {
-        printk("uart drv add one port err. ret = 0x%08x\n", ret);
-        goto PORT_ERR;
-    }
 
     dummy_array[index] = dummy;
 
@@ -545,7 +298,7 @@ int create_manager_device(struct platform_device* pdev, int index)
     if (NULL == tmp) {
         printk("create device err! %d, %s\n", dev, dev_name);
     }
-
+    
     printk("create dummy serial manager device /dev/%s\n", dev_name);
 
     // platform_set_drvdata(pdev, dummy);
@@ -553,7 +306,6 @@ int create_manager_device(struct platform_device* pdev, int index)
     return ret;
 
 DEV_ERR:
-    uart_remove_one_port(&dummy_driver, &dummy->port);
 
 PORT_ERR:
     if (dummy->fifo.buf)
@@ -592,8 +344,6 @@ static int serial_dummy_remove(struct platform_device* dev)
         dev_num = MKDEV(dummy_serial_major, dummy_serial_minor_start + i);
         device_destroy(dummy_class, dev_num);
         cdev_del(&dummy->c_dev);
-
-        uart_remove_one_port(&dummy_driver, &dummy->port);
 
         if (dummy->fifo.buf)
             kfree(dummy->fifo.buf);
@@ -650,18 +400,10 @@ static int __init serial_dummy_init(void)
     // 注册平台设备(应当分离出去)
     ret = platform_device_register(&dummy_serial_dev);
     dummy_class = class_create(THIS_MODULE, "dumtty");
-
-    ret = uart_register_driver(&dummy_driver);
-    if (ret) {
-        printk("dummy drv register err ret = 0x%08x\n", ret);
-        return -EINVAL;
-    }
-
     ret = platform_driver_register(&dummy_serial_dirver);
     if (ret) {
         printk("dummy platform drv register err ret = %d\n", ret);
         platform_device_unregister(&dummy_serial_dev);
-        uart_unregister_driver(&dummy_driver);
     }
 
     return ret;
@@ -670,9 +412,7 @@ static int __init serial_dummy_init(void)
 static void __exit serial_dummy_exit(void)
 {
     platform_driver_unregister(&dummy_serial_dirver);
-    uart_unregister_driver(&dummy_driver);
     class_destroy(dummy_class);
-
     platform_device_unregister(&dummy_serial_dev);
 }
 

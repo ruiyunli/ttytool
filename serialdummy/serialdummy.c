@@ -47,10 +47,6 @@ static struct dummy_uart_port* dummy_array[DUMMY_SERIAL_NR];
 unsigned int dummy_serial_nr = 1;
 module_param(dummy_serial_nr, uint, S_IRUGO);
 
-// static DECLARE_WAIT_QUEUE_HEAD(dummy_wq); 
-
-int dummy_fasync(int fd, struct file* filp, int mode);
-
 struct dummy_port_data {
     // unsigned char port_idx;
 
@@ -268,8 +264,6 @@ int create_manager_device(struct platform_device* pdev, int index)
     return ret;
 
 DEV_ERR:
-
-PORT_ERR:
     if (dummy->fifo.buf)
         kfree(dummy->fifo.buf);
 

@@ -45,7 +45,7 @@ static int dummy_serial_major = 0;
 static int dummy_serial_minor_start = 0;
 static struct dummy_file_data* dummy_array[2*DUMMY_SERIAL_NR];
 
-unsigned int dummy_serial_nr = 1;
+unsigned int dummy_serial_nr = 2;
 module_param(dummy_serial_nr, uint, S_IRUGO);
 
 struct dummy_platform_data {

@@ -54,11 +54,16 @@ struct dummy_platform_data {
     unsigned long fifo_size;
 };
 
-struct dummy_file_data {
-    struct dummy_platform_data* port_data;
+struct dummy_cache {
+  struct circ_buf fifo;
+  spinlock_t lock;
+};
 
-    struct circ_buf fifo;
-    spinlock_t lock;
+struct dummy_file_data {
+    struct dummy_platform_data* platform_data;
+
+    struct dummy_cache* cache_local;
+    struct dummy_cache* cache_buddy;
   
     struct cdev c_dev;
     int index;
@@ -92,12 +97,13 @@ int dummy_release(struct inode* i, struct file* file)
 ssize_t dummy_read(struct file* file, char __user* buf, size_t size, loff_t* offset)
 {
     struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
-    struct circ_buf* circ = &dummy->fifo;
+    struct circ_buf* circ = &dummy->cache_local->fifo;
+    spinlock_t* lock = &dummy->cache_local->lock;
     int fifo_size=0, fifo_len=0, read_len=0, ret=0, len=0;
     
-    spin_lock(&dummy->lock);
+    spin_lock(lock);
 
-    fifo_size = dummy->port_data->fifo_size;
+    fifo_size = dummy->platform_data->fifo_size;
     fifo_len = CIRC_CNT(circ->head, circ->tail, fifo_size);
     read_len = size > fifo_len ? fifo_len : size;
 
@@ -119,19 +125,20 @@ ssize_t dummy_read(struct file* file, char __user* buf, size_t size, loff_t* off
         ret += len;
 	}
 
-    spin_unlock(&dummy->lock);
+    spin_unlock(lock);
     return ret;
 }
 
 ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff_t* offset)
 {
     struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
-    struct circ_buf* circ = &dummy->fifo;
+    struct circ_buf* circ = &dummy->cache_local->fifo;
+    spinlock_t* lock = &dummy->cache_local->lock;
     int fifo_size=0, fifo_space=0, write_len=0, ret=0, len=0;
     
-    spin_lock(&dummy->lock);
+    spin_lock(lock);
     
-    fifo_size = dummy->port_data->fifo_size;
+    fifo_size = dummy->platform_data->fifo_size;
     fifo_space = CIRC_SPACE(circ->head, circ->tail, fifo_size);
     write_len = size > fifo_space ? fifo_space : size;
 
@@ -158,7 +165,7 @@ ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff
 		ret += len;
 	}
 
-    spin_unlock(&dummy->lock);
+    spin_unlock(lock);
     return ret;
 }
 
@@ -172,18 +179,17 @@ long dummy_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
 unsigned int dummy_poll(struct file* file, struct poll_table_struct* pwait)
 {
     struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
-    struct circ_buf* circ = &dummy->fifo;
+    struct circ_buf* circ = &dummy->cache_local->fifo;
+    spinlock_t * lock = &dummy->cache_local->lock;
     unsigned int mask = 0, fifo_size = 0, cnt = 0;
     
-    spin_lock(&dummy->lock);
+    spin_lock(lock);
     
-    fifo_size = dummy->port_data->fifo_size;
+    fifo_size = dummy->platform_data->fifo_size;
     cnt = CIRC_CNT(circ->head, circ->tail, fifo_size);
 
-    spin_unlock(&dummy->lock);
+    spin_unlock(lock);
     
-
-
     //printk("%d cnt %d\n", dummy->index, cnt);
     
     if (cnt)
@@ -214,6 +220,7 @@ int create_manager_device(struct platform_device* pdev, int index)
     struct dummy_file_data* dummy = NULL;
     struct dummy_platform_data* data = NULL;
     struct device* tmp = NULL;
+    struct dummy_cache* cache = NULL;
     int ret = 0;
     dev_t dev = 0;
     char dev_name[64] = { 0 };
@@ -234,18 +241,24 @@ int create_manager_device(struct platform_device* pdev, int index)
     memset(dummy, 0, sizeof(struct dummy_file_data));
     dummy->index = index;
 
-    dummy->fifo.buf = (unsigned char*)kmalloc(data->fifo_size, GFP_KERNEL);
-    dummy->fifo.head = 0;
-    dummy->fifo.tail = 0;
-    spin_lock_init(&dummy->lock);
-
-    if (!dummy->fifo.buf) {
-        printk("dummy fifo kmalloc err rx=%p tx=%p\n", dummy->fifo.buf);
-        ret = -ENOMEM;
+    cache =(struct dummy_cache*)kmalloc(sizeof(struct dummy_cache), GFP_KERNEL);
+    if ( !cache ) {
+        printk("dummy cache kmalloc error\n");
+        goto FIFO_ERR;
+    }
+    cache->fifo.buf = (unsigned char*)kmalloc(data->fifo_size, GFP_KERNEL);
+    if ( !cache->fifo.buf ) {
+        printk("dummy fifo buffer kmalloc error\n");
         goto FIFO_ERR;
     }
 
-    dummy->port_data = data;
+    cache->fifo.head = 0;
+    cache->fifo.tail = 0;
+    spin_lock_init(&cache->lock);
+    
+    dummy->cache_local = cache;
+    
+    dummy->platform_data = data;
 
     dummy_array[index] = dummy;
 
@@ -283,10 +296,13 @@ int create_manager_device(struct platform_device* pdev, int index)
     return ret;
 
 DEV_ERR:
-    if (dummy->fifo.buf)
-        kfree(dummy->fifo.buf);
-
 FIFO_ERR:
+    if (cache && cache->fifo.buf)
+        kfree(cache->fifo.buf);
+
+    if(cache)
+        kfree(cache);
+    
     kfree(dummy);
 
     return ret;
@@ -320,8 +336,10 @@ static int serial_dummy_remove(struct platform_device* dev)
         device_destroy(dummy_class, dev_num);
         cdev_del(&dummy->c_dev);
 
-        if (dummy->fifo.buf)
-            kfree(dummy->fifo.buf);
+        if (dummy->cache_local && dummy->cache_local->fifo.buf)
+            kfree(dummy->cache_local->fifo.buf);
+        if (dummy->cache_local)
+            kfree(dummy->cache_local);
 
         kfree(dummy);
     }

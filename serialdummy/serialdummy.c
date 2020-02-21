@@ -42,19 +42,19 @@
 
 static int dummy_serial_major = 0;
 static int dummy_serial_minor_start = 0;
-static struct dummy_uart_port* dummy_array[DUMMY_SERIAL_NR];
+static struct dummy_file_data* dummy_array[DUMMY_SERIAL_NR];
 
 unsigned int dummy_serial_nr = 1;
 module_param(dummy_serial_nr, uint, S_IRUGO);
 
-struct dummy_port_data {
+struct dummy_platform_data {
     // unsigned char port_idx;
 
     unsigned long fifo_size;
 };
 
-struct dummy_uart_port {
-    struct dummy_port_data* port_data;
+struct dummy_file_data {
+    struct dummy_platform_data* port_data;
 
     struct circ_buf fifo;
     struct cdev c_dev;
@@ -81,14 +81,14 @@ int dummy_open(struct inode* i, struct file* file)
 
 int dummy_release(struct inode* i, struct file* file)
 {
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
+    struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
     file->private_data = NULL;
     return 0;
 }
 
 ssize_t dummy_read(struct file* file, char __user* buf, size_t size, loff_t* offset)
 {
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
+    struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
     struct circ_buf* circ = &dummy->fifo;
     int fifo_size = dummy->port_data->fifo_size;
     int fifo_len = CIRC_CNT(circ->head, circ->tail, fifo_size);
@@ -116,7 +116,7 @@ ssize_t dummy_read(struct file* file, char __user* buf, size_t size, loff_t* off
 
 ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff_t* offset)
 {
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
+    struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
     struct circ_buf* circ = &dummy->fifo;
     int fifo_size = dummy->port_data->fifo_size;
     int fifo_space = CIRC_SPACE(circ->head, circ->tail, fifo_size);
@@ -152,14 +152,14 @@ ssize_t dummy_write(struct file* file, const char __user* buf, size_t size, loff
 
 long dummy_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
 {
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
+    struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
 
     return 0;
 }
 
 unsigned int dummy_poll(struct file* file, struct poll_table_struct* pwait)
 {
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
+    struct dummy_file_data* dummy = (struct dummy_file_data*)file->private_data;
     struct circ_buf* circ = &dummy->fifo;
     int fifo_size = dummy->port_data->fifo_size;
     int cnt = CIRC_CNT(circ->head, circ->tail, fifo_size);
@@ -176,7 +176,7 @@ unsigned int dummy_poll(struct file* file, struct poll_table_struct* pwait)
 
 int dummy_fasync(int fd, struct file* filp, int mode)
 {
-    //struct dummy_uart_port* dummy = (struct dummy_uart_port*)filp->private_data;
+    //struct dummy_file_data* dummy = (struct dummy_file_data*)filp->private_data;
     int ret = 0;
     return ret;
 }
@@ -193,27 +193,27 @@ struct file_operations dummy_fops = {
 
 int create_manager_device(struct platform_device* pdev, int index)
 {
-    struct dummy_uart_port* dummy = NULL;
-    struct dummy_port_data* data = NULL;
+    struct dummy_file_data* dummy = NULL;
+    struct dummy_platform_data* data = NULL;
     struct device* tmp = NULL;
     int ret = 0;
     dev_t dev = 0;
     char dev_name[64] = { 0 };
 
-    data = (struct dummy_port_data*)pdev->dev.platform_data;
+    data = (struct dummy_platform_data*)pdev->dev.platform_data;
     if (!data) {
         printk("not platform data\n");
         return -EINVAL;
     }
 
-    dummy = (struct dummy_uart_port*)\
-        kmalloc(sizeof(struct dummy_uart_port), GFP_KERNEL);
+    dummy = (struct dummy_file_data*)\
+        kmalloc(sizeof(struct dummy_file_data), GFP_KERNEL);
     if (!dummy) {
         printk("malloc dummy error\n");
         return -ENOMEM;
     }
 
-    memset(dummy, 0, sizeof(struct dummy_uart_port));
+    memset(dummy, 0, sizeof(struct dummy_file_data));
     dummy->index = index;
 
     dummy->fifo.buf = (unsigned char*)kmalloc(data->fifo_size, GFP_KERNEL);
@@ -290,7 +290,7 @@ static int serial_dummy_probe(struct platform_device* pdev)
 
 static int serial_dummy_remove(struct platform_device* dev)
 {
-    struct dummy_uart_port* dummy = NULL;
+    struct dummy_file_data* dummy = NULL;
     int i = 0;
     dev_t dev_num = 0;
 
@@ -322,7 +322,7 @@ static struct platform_driver dummy_serial_dirver = {
     }
 };
 
-static struct dummy_port_data dummy_serial_dev_data = {
+static struct dummy_platform_data dummy_serial_dev_data = {
         .fifo_size = 2 * 1024,
 };
 

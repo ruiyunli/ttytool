@@ -58,20 +58,9 @@ struct dummy_port_data {
 };
 
 struct dummy_uart_port {
-    struct uart_port port;
-
     struct dummy_port_data* port_data;
 
     struct circ_buf fifo;
-
-    struct fasync_struct* async_queue;
-    struct semaphore async_sem;
-
-    struct completion manager_activie;
-    wait_queue_head_t poll_wq;
-
-    int manager_reset;
-
     struct cdev c_dev;
     int index;
 };
@@ -97,14 +86,6 @@ int dummy_open(struct inode* i, struct file* file)
 int dummy_release(struct inode* i, struct file* file)
 {
     struct dummy_uart_port* dummy = (struct dummy_uart_port*)file->private_data;
-
-    dummy_fasync(-1, file, 0);
-
-    down(&dummy->async_sem);
-    dummy->async_queue = NULL;
-    dummy->manager_reset = 1;
-    up(&dummy->async_sem);
-
     file->private_data = NULL;
     return 0;
 }
@@ -189,9 +170,8 @@ unsigned int dummy_poll(struct file* file, struct poll_table_struct* pwait)
 
     unsigned int mask = 0;
 
-    printk("%d cnt %d\n", dummy->index, cnt);
-    poll_wait(file, &dummy->poll_wq, pwait);
-
+    //printk("%d cnt %d\n", dummy->index, cnt);
+    
     if (cnt)
         mask |= POLLIN | POLLRDNORM;
 
@@ -200,22 +180,8 @@ unsigned int dummy_poll(struct file* file, struct poll_table_struct* pwait)
 
 int dummy_fasync(int fd, struct file* filp, int mode)
 {
-    struct dummy_uart_port* dummy = (struct dummy_uart_port*)filp->private_data;
+    //struct dummy_uart_port* dummy = (struct dummy_uart_port*)filp->private_data;
     int ret = 0;
-
-    down(&dummy->async_sem);
-    ret = fasync_helper(fd, filp, mode, &dummy->async_queue);
-
-    // 如果管理进程重置过,则需要主动通知其更新termios
-    if (dummy->manager_reset) {
-        dummy->manager_reset = 0;
-        kill_fasync(&dummy->async_queue, SIGIO, POLL_IN);
-    }
-
-    up(&dummy->async_sem);
-
-    complete(&dummy->manager_activie);
-
     return ret;
 }
 
@@ -253,10 +219,6 @@ int create_manager_device(struct platform_device* pdev, int index)
 
     memset(dummy, 0, sizeof(struct dummy_uart_port));
     dummy->index = index;
-
-    sema_init(&dummy->async_sem, 1);
-    init_completion(&dummy->manager_activie);
-    init_waitqueue_head(&dummy->poll_wq);
 
     dummy->fifo.buf = (unsigned char*)kmalloc(data->fifo_size, GFP_KERNEL);
     dummy->fifo.head = 0;

@@ -45,7 +45,7 @@ static int dummy_serial_major = 0;
 static int dummy_serial_minor_start = 0;
 static struct dummy_file_data* dummy_array[DUMMY_SERIAL_NR];
 
-unsigned int dummy_serial_nr = 1;
+unsigned int dummy_serial_nr = 2;
 module_param(dummy_serial_nr, uint, S_IRUGO);
 
 struct dummy_platform_data {
@@ -65,8 +65,8 @@ struct dummy_file_data {
     struct dummy_cache* cache_local;
     struct dummy_cache* cache_buddy;
   
-    struct cdev c_dev;
     int index;
+    struct cdev c_dev;
 };
 
 
@@ -80,7 +80,11 @@ int dummy_open(struct inode* i, struct file* file)
     int minor = iminor(i);
     int index = minor - dummy_serial_minor_start;
 
-    file->private_data = dummy_array[index];
+    struct dummy_file_data* data =  container_of(i->i_cdev, struct dummy_file_data, c_dev);
+    if(!data)
+      printk("invalid private data\n");
+    
+    file->private_data = data;
 
     drintk("minor %d index %d private_data %p\n", minor, index, file->private_data);
 
